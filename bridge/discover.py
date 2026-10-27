@@ -20,7 +20,7 @@ import urllib.request
 def discover_verified_url(topic, token):
     url = f"https://ntfy.sh/{topic}/json?poll=1&since=all"
     best_url, best_ts, best_server = "", 0, ""
-    req = urllib.request.Request(url, headers={"User-Agent": "cloud-agent-bridge/2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "cloud-agent-bridge"})
     with urllib.request.urlopen(req, timeout=25) as r:
         for line in r.read().decode("utf-8", errors="replace").splitlines():
             try:
@@ -46,7 +46,7 @@ def call_webhook(webhook_url, token, payload, timeout=90):
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "User-Agent": "cloud-agent-bridge/2.0",
+            "User-Agent": "cloud-agent-bridge",
         },
         method="POST",
     )
