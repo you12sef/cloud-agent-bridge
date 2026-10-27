@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-discover.py — AI Client & Fallback Discovery Tool for cloud-agent-bridge
+discover.py — AI Client, GET/POST Executor & Fallback Discovery Tool for cloud-agent-bridge
 Zero external dependencies (uses Python standard library only).
 
 Features:
-  1. Verify & discover HMAC-SHA256 signed Cloudflare Tunnel URLs from ntfy.sh fallback topic
-  2. Execute synchronous commands (`exec`) or asynchronous jobs (`exec_async` / `job_status`)
-  3. Upload (`upload`) and download (`download`) files via Base64 over HTTPS POST
+  1. Verify & discover HMAC-SHA256 signed Tunnel URLs from ntfy.sh fallback topic
+  2. Execute commands via HTTP POST or HTTP GET (`--method get` for GET-only environments)
+  3. Generate ready-to-browse GET URLs (`--make-get-url`) for AI models like Gemini
+  4. Upload (`--upload`) and download (`--download`) files via Base64
 """
 import argparse
 import base64
@@ -14,7 +15,12 @@ import hashlib
 import hmac
 import json
 import sys
+import urllib.parse
 import urllib.request
+
+
+def b64url_encode(data_bytes):
+    return base64.urlsafe_b64encode(data_bytes).decode("ascii").rstrip("=")
 
 
 def discover_verified_url(topic, token):
@@ -39,26 +45,38 @@ def discover_verified_url(topic, token):
     return best_url, best_server, best_ts
 
 
-def call_webhook(webhook_url, token, payload, timeout=90):
-    req = urllib.request.Request(
-        webhook_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "cloud-agent-bridge",
-        },
-        method="POST",
-    )
+def build_get_url(webhook_url, token, payload):
+    p_b64 = b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    base = webhook_url.rstrip("/")
+    return f"{base}/?token={urllib.parse.quote(token)}&p={p_b64}"
+
+
+def call_webhook(webhook_url, token, payload, method="post", timeout=90):
+    if method.lower() == "get":
+        target = build_get_url(webhook_url, token, payload)
+        req = urllib.request.Request(target, headers={"User-Agent": "cloud-agent-bridge"}, method="GET")
+    else:
+        req = urllib.request.Request(
+            webhook_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "cloud-agent-bridge",
+            },
+            method="POST",
+        )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="cloud-agent-bridge client & discovery tool")
-    ap.add_argument("--url", help="Webhook URL (https://*.trycloudflare.com)")
+    ap = argparse.ArgumentParser(description="cloud-agent-bridge client & GET/POST discovery tool")
+    ap.add_argument("--url", help="Webhook URL (https://...)")
     ap.add_argument("--topic", help="Fallback ntfy.sh topic (if --url is omitted or unreachable)")
     ap.add_argument("--token", required=True, help="40-char API Bearer token")
+    ap.add_argument("--method", choices=["post", "get"], default="post", help="HTTP method to use (default: post)")
+    ap.add_argument("--make-get-url", action="store_true", help="Print the encoded GET URL instead of calling it")
     ap.add_argument("--discover", action="store_true", help="Discover and verify latest HMAC-signed URL from ntfy")
     ap.add_argument("--cmd", help="Bash command to execute via webhook")
     ap.add_argument("--async-cmd", help="Launch a long-running background command (>85s)")
@@ -81,19 +99,31 @@ def main():
         webhook_url = best_url
 
     if args.cmd:
-        res = call_webhook(webhook_url, args.token, {"action": "exec", "cmd": args.cmd})
+        payload = {"action": "exec", "cmd": args.cmd}
+        if args.make_get_url:
+            print(build_get_url(webhook_url, args.token, payload))
+            return
+        res = call_webhook(webhook_url, args.token, payload, method=args.method)
         sys.stdout.write(res.get("stdout", ""))
         if res.get("stderr"):
             sys.stderr.write(res["stderr"])
         sys.exit(res.get("rc", 0))
 
     if args.async_cmd:
-        res = call_webhook(webhook_url, args.token, {"action": "exec_async", "cmd": args.async_cmd})
+        payload = {"action": "exec_async", "cmd": args.async_cmd}
+        if args.make_get_url:
+            print(build_get_url(webhook_url, args.token, payload))
+            return
+        res = call_webhook(webhook_url, args.token, payload, method=args.method)
         print(json.dumps(res, indent=2))
         return
 
     if args.job_status:
-        res = call_webhook(webhook_url, args.token, {"action": "job_status", "job_id": args.job_status})
+        payload = {"action": "job_status", "job_id": args.job_status}
+        if args.make_get_url:
+            print(build_get_url(webhook_url, args.token, payload))
+            return
+        res = call_webhook(webhook_url, args.token, payload, method=args.method)
         print(json.dumps(res, indent=2))
         return
 
@@ -101,13 +131,13 @@ def main():
         local_p, remote_p = args.upload
         with open(local_p, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("ascii")
-        res = call_webhook(webhook_url, args.token, {"action": "upload", "path": remote_p, "data_b64": b64})
+        res = call_webhook(webhook_url, args.token, {"action": "upload", "path": remote_p, "data_b64": b64}, method=args.method)
         print(json.dumps(res, indent=2))
         return
 
     if args.download:
         remote_p, local_p = args.download
-        res = call_webhook(webhook_url, args.token, {"action": "download", "path": remote_p})
+        res = call_webhook(webhook_url, args.token, {"action": "download", "path": remote_p}, method=args.method)
         with open(local_p, "wb") as f:
             f.write(base64.b64decode(res["data_b64"]))
         print(json.dumps({"status": "ok", "saved_to": local_p}, indent=2))

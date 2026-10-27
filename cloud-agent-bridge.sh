@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  cloud-agent-bridge.sh (v2.0) — Cloudflare Tunnel + HTTP Webhook Agent
-#  Replaces Pinggy + SSH with a persistent HTTPS Webhook + Bearer Token
+#  cloud-agent-bridge.sh — Universal Tunnel + HTTP GET/POST Agent
+#  Supports Cloudflare Quick Tunnels + Pinggy HTTPS (WAF-free for Gemini)
+#  Supports BOTH HTTP POST (JSON) and HTTP GET (Base64URL Payload + Web UI)
 # ---------------------------------------------------------------------
 #  Usage:
-#    bash cloud-agent-bridge.sh --start            install (first time) + start bridge
-#    bash cloud-agent-bridge.sh --stop             full stop (watchdog + tunnel + agent)
-#    bash cloud-agent-bridge.sh --status           show status + AI handoff snippet
-#    bash cloud-agent-bridge.sh --handoff          print ONLY the paste-ready AI snippet
-#    bash cloud-agent-bridge.sh --restart          restart services
-#    bash cloud-agent-bridge.sh --new-topic        rotate the fallback ntfy topic
-#    bash cloud-agent-bridge.sh --tunnel-token T   configure a Named Cloudflare Tunnel token
-#    bash cloud-agent-bridge.sh --uninstall        stop + remove cron/PATH/state
-#    bash cloud-agent-bridge.sh --purge            like --uninstall + delete project folder
+#    bash cloud-agent-bridge.sh --start                  install + start bridge
+#    bash cloud-agent-bridge.sh --start --provider pinggy  use Pinggy HTTPS (bypasses Cloudflare Bot Fight for Gemini)
+#    bash cloud-agent-bridge.sh --stop                   full stop (watchdog + tunnel + agent)
+#    bash cloud-agent-bridge.sh --status                 show status + AI handoff snippet
+#    bash cloud-agent-bridge.sh --handoff                print ONLY the paste-ready AI snippet
+#    bash cloud-agent-bridge.sh --restart                restart services
+#    bash cloud-agent-bridge.sh --new-topic              rotate the fallback ntfy topic
+#    bash cloud-agent-bridge.sh --provider cf|pinggy     switch tunnel provider
+#    bash cloud-agent-bridge.sh --tunnel-token T [URL]   configure a Named Cloudflare Tunnel token
+#    bash cloud-agent-bridge.sh --uninstall              stop + remove cron/PATH/state
+#    bash cloud-agent-bridge.sh --purge                  like --uninstall + delete project folder
 #
 #  Dedicated AI user & API Token management:
 #    cloud-agent-bridge --ai-user create|status|rotate|lock|unlock|remove
@@ -22,7 +25,7 @@ set -u
 : "${HOME:?ERROR: HOME is not set}"
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 
-VERSION="2.0"
+VERSION="2.1"
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 WATCHDOG_TEMPLATE="$SCRIPT_DIR/bridge/watchdog.sh"
@@ -82,6 +85,7 @@ save_state() {
     { printf 'NTFY_TOPIC=%q\n' "$TOPIC"
       printf 'SERVER_NAME=%q\n' "$NAME"
       printf 'AGENT_PORT=%q\n' "$AGENT_PORT"
+      printf 'TUNNEL_PROVIDER=%q\n' "${TUNNEL_PROVIDER:-cf}"
       printf 'CF_TUNNEL_TOKEN=%q\n' "${CF_TUNNEL_TOKEN:-}"
       printf 'CUSTOM_WEBHOOK_URL=%q\n' "${CUSTOM_WEBHOOK_URL:-}"
       printf 'INSTALLED_AT=%q\n' "$INSTALLED_AT"
@@ -93,15 +97,17 @@ save_state() {
 }
 
 load_state() {
-    NTFY_TOPIC=""; SERVER_NAME=""; INSTALLED_AT=""; CF_TUNNEL_TOKEN=""; CUSTOM_WEBHOOK_URL=""
+    NTFY_TOPIC=""; SERVER_NAME=""; INSTALLED_AT=""; TUNNEL_PROVIDER="cf"; CF_TUNNEL_TOKEN=""; CUSTOM_WEBHOOK_URL=""
     [ -f "$STATE_FILE" ] && . "$STATE_FILE"
     TOPIC="$NTFY_TOPIC"
     NAME="$SERVER_NAME"
+    TUNNEL_PROVIDER="${TUNNEL_PROVIDER:-cf}"
     return 0
 }
 
 # ---------- cloudflared auto-installer (no root needed) ------------------
 ensure_cloudflared() {
+    [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ] && return 0
     if command -v cloudflared >/dev/null 2>&1; then
         CF_BIN="$(command -v cloudflared)"
         return 0
@@ -193,6 +199,9 @@ stop_services() {
     if pkill -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' 2>/dev/null; then
         log "cloudflared tunnel: stopped"
     fi
+    if pkill -f 'ssh -p 443.*free\.pinggy\.io' 2>/dev/null; then
+        log "pinggy HTTPS tunnel: stopped"
+    fi
     if pkill -f 'python3.*cloud-agent-bridge/agent\.py' 2>/dev/null; then
         log "webhook agent: stopped"
     fi
@@ -229,7 +238,7 @@ grab_url() {
     local f url=""
     for f in "$CAB_DIR/current.json" "$CAB_DIR/tunnel_new.log"; do
         [ -f "$f" ] || continue
-        url="$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$f" 2>/dev/null | head -1)"
+        url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(trycloudflare\.com|pinggy\.link|pinggy-free\.link|a\.free\.pinggy\.link)' "$f" 2>/dev/null | head -1)"
         [ -n "$url" ] && { printf '%s' "$url"; return 0; }
     done
     return 1
@@ -439,14 +448,18 @@ ai_cmd_sudo() {
 # ---------- main commands ------------------------------------------------
 cmd_start() {
     load_state
+    if [ -n "$FORCED_PROVIDER" ]; then
+        TUNNEL_PROVIDER="$FORCED_PROVIDER"
+    fi
     if [ -z "${TOPIC:-}" ]; then
         TOPIC="${FORCED_TOPIC:-$(gen_topic)}"
         NAME="${BRIDGE_NAME:-$(hostname)}"
         INSTALLED_AT="$(date '+%F %T')"
         save_state
-        log "fresh install — fallback topic: $TOPIC"
+        log "fresh install — fallback topic: $TOPIC (provider: $TUNNEL_PROVIDER)"
     else
-        log "reusing saved state — topic: $TOPIC"
+        save_state
+        log "reusing saved state — topic: $TOPIC (provider: $TUNNEL_PROVIDER)"
     fi
     [ -n "${NAME:-}" ] || NAME="$(hostname)"
 
@@ -469,7 +482,7 @@ cmd_start() {
         return 0
     fi
 
-    log "waiting for Cloudflare Quick Tunnel URL (up to 70s)..."
+    log "waiting for HTTPS Tunnel URL (provider: $TUNNEL_PROVIDER, up to 70s)..."
     local url
     if url="$(wait_url 24)"; then
         print_handoff_snippet
@@ -488,15 +501,16 @@ cmd_stop() {
 cmd_status() {
     load_state
     ai_state_load
-    local pid="" run_s="stopped" url="" cron_s="disabled" mode_s="Quick Tunnel (ephemeral)"
+    local pid="" run_s="stopped" url="" cron_s="disabled" mode_s="Cloudflare Quick Tunnel (ephemeral)"
     pid="$(pgrep -f 'bash[[:space:]]+[^[:space:]]*cloud-agent-bridge/watchdog\.sh' 2>/dev/null | head -1)"
     [ -n "$pid" ] && run_s="running (PID $pid)"
-    url="$(grab_url)" || url="(waiting for cloudflared...)"
+    url="$(grab_url)" || url="(waiting for tunnel...)"
     crontab -l 2>/dev/null | grep -q 'cloud-agent-bridge/watchdog.sh' && cron_s="enabled (@reboot + */5)"
-    [ -n "${CF_TUNNEL_TOKEN:-}" ] && mode_s="Named Tunnel (persistent domain)"
+    [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ] && mode_s="Pinggy HTTPS Tunnel (WAF-free for Gemini GET/Browse)"
+    [ -n "${CF_TUNNEL_TOKEN:-}" ] && mode_s="Cloudflare Named Tunnel (persistent domain)"
 
     echo "=========================================================="
-    echo "  CLOUD-AGENT-BRIDGE — STATUS (v$VERSION Cloudflare Webhook)"
+    echo "  CLOUD-AGENT-BRIDGE — STATUS (Universal HTTP GET/POST)"
     echo "----------------------------------------------------------"
     echo "  Service        : $run_s"
     echo "  Tunnel Mode    : $mode_s"
@@ -518,21 +532,23 @@ print_handoff_snippet() {
     load_state
     ai_state_load
     local url
-    url="$(grab_url)" || url="https://<pending-run-cloud-agent-bridge-status>.trycloudflare.com"
+    url="$(grab_url)" || url="https://<pending-run-cloud-agent-bridge-status>"
+    local tok="${AI_PASS:-(run: cloud-agent-bridge --start)}"
 
     local snip=""
-    snip+="=== CLOUD-AGENT-BRIDGE AI HANDOFF (v2.0) ==="$'\n'
+    snip+="=== CLOUD-AGENT-BRIDGE AI HANDOFF ==="$'\n'
     snip+="server name : ${NAME:-$(hostname)}"$'\n'
+    snip+="tunnel mode : ${TUNNEL_PROVIDER:-cf}"$'\n'
     snip+="webhook url : $url"$'\n'
-    snip+="api token   : ${AI_PASS:-(run: cloud-agent-bridge --start)}"$'\n'
+    snip+="api token   : $tok"$'\n'
     snip+="ntfy topic  : ${TOPIC:-(none)}"$'\n'
     snip+="ai user     : ${AI_USER:-default} (sudo: ${AI_SUDO:-off}, locked: ${AI_LOCKED:-0})"$'\n'
     snip+="============================================"$'\n'
-    snip+="Run bash commands via HTTPS POST (no SSH/paramiko needed):"$'\n'
-    snip+="curl -s -X POST \"$url\" \\"$'\n'
-    snip+="  -H \"Authorization: Bearer ${AI_PASS:-TOKEN}\" \\"$'\n'
-    snip+="  -H \"Content-Type: application/json\" \\"$'\n'
-    snip+="  -d '{\"action\":\"exec\",\"cmd\":\"hostname && whoami && uptime\"}'"
+    snip+="1) Standard HTTPS POST (curl / Python):"$'\n'
+    snip+="   curl -s -X POST \"$url\" -H \"Authorization: Bearer $tok\" -H \"Content-Type: application/json\" -d '{\"action\":\"exec\",\"cmd\":\"hostname && whoami && uptime\"}'"$'\n'
+    snip+="2) Pure HTTPS GET (for Gemini / Browse-only AI):"$'\n'
+    snip+="   Open or fetch: ${url}/?token=${tok}&action=exec&cmd_b64=aG9zdG5hbWUgJiYgd2hvYW1pICYmIHVwdGltZQ"$'\n'
+    snip+="   (Encode any JSON payload as URL-safe Base64 in ?token=${tok}&p=<BASE64URL_JSON>)"
 
     echo ""
     echo "###### AI HANDOFF SNIPPET — paste this in chat for your AI ######"
@@ -553,6 +569,20 @@ cmd_new_topic() {
     log "new fallback topic: $TOPIC"
 }
 
+cmd_provider() {
+    load_state
+    local p="${1:-}"
+    case "$p" in
+        cf|cloudflare) TUNNEL_PROVIDER="cf" ;;
+        pinggy)        TUNNEL_PROVIDER="pinggy" ;;
+        *) die "usage: cloud-agent-bridge --provider cf|pinggy" ;;
+    esac
+    save_state
+    alog "provider=$TUNNEL_PROVIDER"
+    log "switched tunnel provider to '$TUNNEL_PROVIDER' — restarting..."
+    cmd_start
+}
+
 cmd_tunnel_token() {
     load_state
     CF_TUNNEL_TOKEN="${1:-}"
@@ -561,8 +591,9 @@ cmd_tunnel_token() {
         CF_TUNNEL_TOKEN=""
         CUSTOM_WEBHOOK_URL=""
         save_state
-        log "cleared Named Tunnel token — reverting to Cloudflare Quick Tunnel on next restart"
+        log "cleared Named Tunnel token — reverting to default tunnel on next restart"
     else
+        TUNNEL_PROVIDER="cf"
         save_state
         log "saved Cloudflare Named Tunnel token (custom URL: ${CUSTOM_WEBHOOK_URL:-none})"
         log "run 'cloud-agent-bridge --restart' to activate"
@@ -590,14 +621,16 @@ cmd_uninstall() {
 
 cmd_help() {
     cat <<'EOF'
-cloud-agent-bridge v2.0 — Cloudflare Tunnel + HTTPS Webhook Agent
+cloud-agent-bridge — Universal HTTPS Tunnel + GET/POST Webhook Agent
 
 Usage:
   bash cloud-agent-bridge.sh --start                      install & start tunnel + webhook agent
+  bash cloud-agent-bridge.sh --start --provider pinggy    start with Pinggy HTTPS (bypasses Cloudflare WAF for Gemini)
   bash cloud-agent-bridge.sh --stop                       stop all bridge processes
   bash cloud-agent-bridge.sh --status                     show full status + handoff block
   bash cloud-agent-bridge.sh --handoff                    print ONLY the AI handoff snippet
   bash cloud-agent-bridge.sh --restart                    restart tunnel & agent
+  bash cloud-agent-bridge.sh --provider cf|pinggy         switch between Cloudflare and Pinggy HTTPS
   bash cloud-agent-bridge.sh --new-topic                  rotate fallback ntfy topic
   bash cloud-agent-bridge.sh --tunnel-token <TOK> [URL]   use a permanent Named Cloudflare Tunnel
   bash cloud-agent-bridge.sh --uninstall                  remove cron, PATH, and ~/.cloud-agent-bridge
@@ -610,8 +643,8 @@ EOF
 }
 
 # ---------- CLI router ---------------------------------------------------
-ACTION=""; PURGE=0; YES=0; NO_WAIT=0; BRIDGE_NAME=""; FORCED_TOPIC=""
-TUNNEL_TOK_ARG=""; TUNNEL_URL_ARG=""
+ACTION=""; PURGE=0; YES=0; NO_WAIT=0; BRIDGE_NAME=""; FORCED_TOPIC=""; FORCED_PROVIDER=""
+TUNNEL_TOK_ARG=""; TUNNEL_URL_ARG=""; PROVIDER_ARG=""
 AI_SUB=""; AI_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -621,6 +654,14 @@ while [ $# -gt 0 ]; do
         --handoff|handoff)               ACTION="handoff" ;;
         --restart|restart)               ACTION="restart" ;;
         --new-topic|new-topic)           ACTION="new-topic" ;;
+        --provider)
+            if [ -z "$ACTION" ]; then
+                ACTION="provider"
+                PROVIDER_ARG="${2:-}"
+            else
+                FORCED_PROVIDER="${2:-}"
+            fi
+            shift ;;
         --tunnel-token)
             ACTION="tunnel-token"
             TUNNEL_TOK_ARG="${2:-}"
@@ -652,6 +693,7 @@ case "$ACTION" in
     handoff)      print_handoff_snippet ;;
     restart)      cmd_start ;;
     new-topic)    cmd_new_topic ;;
+    provider)     cmd_provider "$PROVIDER_ARG" ;;
     tunnel-token) cmd_tunnel_token "$TUNNEL_TOK_ARG" "$TUNNEL_URL_ARG" ;;
     uninstall)    cmd_uninstall ;;
     ai-user)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# watchdog.sh (v2.0) — Supervises local Webhook Agent + cloudflared
+# watchdog.sh — Supervises local Webhook Agent + Tunnel (Cloudflare or Pinggy HTTPS)
 # Part of the "cloud-agent-bridge" kit (see README.md)
 # =============================================================
 CAB_DIR="$HOME/.cloud-agent-bridge"
@@ -90,13 +90,44 @@ ensure_agent() {
     fi
 }
 
-start_tunnel() {
-    local cf urlf="$CAB_DIR/tunnel_new.log" url i CF_TUNNEL_TOKEN="" CUSTOM_WEBHOOK_URL=""
+tunnel_running() {
+    local TUNNEL_PROVIDER="cf"
     [ -f "$STATE_ENV" ] && . "$STATE_ENV"
-    cf="$(find_cf)"
+    if [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ]; then
+        pgrep -f 'ssh -p 443.*free\.pinggy\.io' >/dev/null 2>&1
+    else
+        pgrep -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' >/dev/null 2>&1
+    fi
+}
+
+start_tunnel() {
+    local cf urlf="$CAB_DIR/tunnel_new.log" url i TUNNEL_PROVIDER="cf" CF_TUNNEL_TOKEN="" CUSTOM_WEBHOOK_URL=""
+    [ -f "$STATE_ENV" ] && . "$STATE_ENV"
     pkill -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' 2>/dev/null || true
+    pkill -f 'ssh -p 443.*free\.pinggy\.io' 2>/dev/null || true
     rm -f "$urlf"
 
+    if [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ]; then
+        setsid nohup ssh -p 443 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes \
+            -R0:127.0.0.1:${AGENT_PORT} a.free.pinggy.io > "$urlf" 2>&1 < /dev/null &
+        echo $! > "$CAB_DIR/tunnel.pid"
+        for i in $(seq 1 25); do
+            sleep 3
+            url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(pinggy\.link|pinggy-free\.link|a\.free\.pinggy\.link)' "$urlf" 2>/dev/null | head -1)"
+            if [ -n "$url" ]; then
+                printf '%s' "$url"
+                return 0
+            fi
+        done
+        return 1
+    fi
+
+    cf="$(find_cf)"
     if [ -n "${CF_TUNNEL_TOKEN:-}" ]; then
         setsid nohup "$cf" tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" \
             > "$urlf" 2>&1 < /dev/null &
@@ -122,26 +153,42 @@ start_tunnel() {
 }
 
 CUR_URL=""
+START_TS=$(date +%s)
 HOUSE=0
-log "===== watchdog v2.0 started: server=$SERVER_NAME port=$AGENT_PORT ====="
+log "===== watchdog started: server=$SERVER_NAME port=$AGENT_PORT ====="
 
 while true; do
     HOUSE=$((HOUSE + 1))
     [ $((HOUSE % 60)) -eq 0 ] && trim_logs
 
     ensure_agent
-    if ! pgrep -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' >/dev/null 2>&1 || [ -z "$CUR_URL" ]; then
-        log "starting Cloudflare Tunnel..."
+    NOW=$(date +%s)
+    AGE=$(( NOW - START_TS ))
+    TUNNEL_PROVIDER="cf"
+    [ -f "$STATE_ENV" ] && . "$STATE_ENV"
+
+    # Renew if tunnel died OR if using pinggy free tier and approaching 50m (3000s)
+    NEED_START=0
+    if ! tunnel_running || [ -z "$CUR_URL" ]; then
+        NEED_START=1
+    elif [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ] && [ "$AGE" -ge 3000 ]; then
+        log "pinggy 50-min proactive renewal triggered"
+        NEED_START=1
+    fi
+
+    if [ "$NEED_START" -eq 1 ]; then
+        log "starting HTTPS Tunnel (provider: ${TUNNEL_PROVIDER:-cf})..."
         if new_url="$(start_tunnel)"; then
+            START_TS=$(date +%s)
             if [ "$new_url" != "$CUR_URL" ]; then
                 CUR_URL="$new_url"
-                printf '{"server":"%s","url":"%s","updated_at":"%s"}\n' \
-                    "$SERVER_NAME" "$CUR_URL" "$(date '+%F %T')" > "$STATE"
+                printf '{"server":"%s","provider":"%s","url":"%s","updated_at":"%s"}\n' \
+                    "$SERVER_NAME" "${TUNNEL_PROVIDER:-cf}" "$CUR_URL" "$(date '+%F %T')" > "$STATE"
                 publish_ntfy "RENEW" "$CUR_URL"
                 log "tunnel active: $CUR_URL"
             fi
         else
-            log "failed to obtain trycloudflare.com URL (retrying in 30s)"
+            log "failed to obtain tunnel URL (retrying in 30s)"
             sleep 10
         fi
     fi
