@@ -22,7 +22,7 @@
 ```text
 AI Assistant (Gemini / Claude / ChatGPT)      Your Linux Server (Behind NAT / Firewall)
 ┌──────────────────────────────────────┐      ┌──────────────────────────────────────────────────┐
-│ • Mode A: HTTPS POST (JSON body)     │      │ HTTPS Tunnel (Cloudflare OR Pinggy HTTPS)        │
+│ • Mode A: HTTPS POST (JSON body)     │      │ HTTPS Tunnel (Cloudflare / Pinggy / localhost.run)│
 │ • Mode B: HTTPS GET (Gemini Browse)  │ ───► │   │                                              │
 │   /?token=<TOK>&cmd_b64=<BASE64URL>  │      │   ▼                                              │
 │   /?token=<TOK>&p=<BASE64URL_JSON>   │      │ Local Webhook Agent (127.0.0.1:18080)            │
@@ -47,10 +47,13 @@ bash cloud-agent-bridge.sh --start
 
 # Option B: For Gemini Chat (Pinggy HTTPS — has NO Cloudflare WAF/Bot-Fight blocking Google's crawler)
 bash cloud-agent-bridge.sh --start --provider pinggy
+
+# Option C: For Gemini Chat without Pinggy (localhost.run HTTPS — instant SSH tunnel, WAF-free, nothing to install)
+bash cloud-agent-bridge.sh --start --provider lhr
 ```
 
 What `--start` does automatically:
-1. **Prepares the tunnel binary**: With the default `cf` provider it detects your CPU architecture (`amd64`, `arm64`, `arm`) and downloads the official standalone Cloudflare `cloudflared` binary into `~/.cloud-agent-bridge/bin/` (no root required). With `pinggy` it uses the system's built-in `ssh` client — nothing to download.
+1. **Prepares the tunnel binary**: With the default `cf` provider it detects your CPU architecture (`amd64`, `arm64`, `arm`) and downloads the official standalone Cloudflare `cloudflared` binary into `~/.cloud-agent-bridge/bin/` (no root required). With the SSH-based providers (`pinggy`, `lhr`) it uses the system's built-in `ssh` client — nothing to download — and auto-generates a dedicated passwordless SSH key at `~/.cloud-agent-bridge/tunnel_id_ed25519`, passing `-T` (no pseudo-terminal) so the tunnel URL prints as plain text immediately.
 2. **Creates an Isolated AI User (`ai-<hex>`)**: Creates a dedicated, unprivileged Linux account and generates a 40-character cryptographic API token stored in `~/.cloud-agent-bridge/ai-user.env` (`chmod 600`).
 3. **Starts the Local Webhook Agent & Tunnel**: Launches `agent.py` on `127.0.0.1:18080` and exposes it via the selected tunnel provider.
 4. **Installs Self-Healing Crontab Supervision**: Adds `@reboot` and `*/5 * * * *` cron entries to ensure the watchdog, agent, and tunnel automatically recover from crashes or reboots (and renews Pinggy URLs proactively every ~50 minutes).
@@ -59,6 +62,7 @@ What `--start` does automatically:
 You can switch tunnel providers at any time with a single command:
 ```bash
 cloud-agent-bridge --provider pinggy   # Switch to Pinggy HTTPS (best for Gemini web browsing)
+cloud-agent-bridge --provider lhr      # Switch to localhost.run HTTPS (WAF-free alternative for Gemini)
 cloud-agent-bridge --provider cf       # Switch to Cloudflare Quick Tunnel
 ```
 
@@ -135,7 +139,8 @@ After your first `--start`, `cloud-agent-bridge` is linked into `~/.local/bin` a
 | :--- | :--- |
 | `cloud-agent-bridge --start` | Install (first run) and start the watchdog, local agent, and tunnel |
 | `cloud-agent-bridge --start --provider pinggy` | Start with the Pinggy HTTPS tunnel (WAF-free for Gemini browsing) |
-| `cloud-agent-bridge --provider cf\|pinggy` | Switch tunnel provider between Cloudflare (`cf`) and Pinggy HTTPS (`pinggy`) |
+| `cloud-agent-bridge --start --provider lhr` | Start with the localhost.run HTTPS tunnel (WAF-free, instant SSH tunnel — no install) |
+| `cloud-agent-bridge --provider cf\|pinggy\|lhr` | Switch tunnel provider between Cloudflare (`cf`), Pinggy HTTPS (`pinggy`), and localhost.run (`lhr`) |
 | `cloud-agent-bridge --stop` | Stop the watchdog, tunnel, local webhook agent, and cron supervisor |
 | `cloud-agent-bridge --status` | Show full service status, tunnel mode, AI user config, and handoff block |
 | `cloud-agent-bridge --handoff` | Print **only** the paste-ready AI handoff block |

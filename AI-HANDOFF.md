@@ -11,9 +11,9 @@
 
 The user will paste the output of `cloud-agent-bridge --handoff` in the chat:
 
-- **`webhook url`**: `https://<tunnel-domain>` (`*.trycloudflare.com`, `*.a.free.pinggy.link`, or a custom domain)
+- **`webhook url`**: `https://<tunnel-domain>` (`*.trycloudflare.com`, `*.pinggy.link`, `*.lhr.life`, or a custom domain)
 - **`api token`**: `<40-char hex secret>`
-- **`tunnel mode`**: `cf` (Cloudflare) or `pinggy` (WAF-free HTTPS for browse-only AI models)
+- **`tunnel mode`**: `cf` (Cloudflare), `pinggy`, or `lhr` (`pinggy` / `lhr` = WAF-free HTTPS for browse-only AI models)
 - **`ntfy topic`**: `cab-fleet-<24-char hex>` *(Fallback ONLY if the webhook URL returns HTTP 530 / unreachable after a server reboot or tunnel rotation)*
 - **`ai user`**: `ai-<hex>` *(Isolated Linux OS account; `sudo` is `off` unless explicitly enabled)*
 
@@ -46,9 +46,10 @@ Any JSON payload (`exec`, `exec_async`, `job_status`, `upload`, `download`, `pin
 - **Browser Console UI**: `?token=<API_TOKEN>&ui=1` (interactive HTML console)
 
 > **Note on Cloudflare Bot Block ("Your request was blocked"):**
-> Free `*.trycloudflare.com` URLs block automated Google/Gemini crawlers. If your GET request is blocked by Cloudflare, ask the user to run:
-> `cloud-agent-bridge --provider pinggy`
-> which switches the tunnel to a WAF-free Pinggy HTTPS URL (`https://*.a.free.pinggy.link`).
+> Free `*.trycloudflare.com` URLs block automated Google/Gemini crawlers. If your GET request is blocked by Cloudflare, ask the user to run either:
+> `cloud-agent-bridge --provider pinggy` — switches the tunnel to a WAF-free Pinggy HTTPS URL (`https://*.pinggy.link`), or
+> `cloud-agent-bridge --provider lhr` — switches the tunnel to a WAF-free localhost.run HTTPS URL (`https://*.lhr.life`).
+> Both SSH-based providers expose the exact same GET/POST API; only the domain changes.
 
 ## 3. Mode B — Standard `HTTPS POST` (For `curl` / Python Sandboxes)
 
@@ -122,7 +123,7 @@ with open("remote_output.log", "wb") as f:
 
 1. **85-Second Sync Ceiling**: Synchronous `exec` calls are capped at **85 seconds** so they never trigger Cloudflare's 100-second `HTTP 524` gateway timeout. For builds, downloads, or package installations taking longer than 60 seconds, **always** use `{"action": "exec_async", "cmd": "..."}` and poll with `{"action": "job_status", "job_id": "..."}`.
 2. **Non-Interactive Execution**: `stdin` is bound to `/dev/null`. Always pass non-interactive flags (`-y`, `--yes`, `DEBIAN_FRONTEND=noninteractive`, `-o BatchMode=yes`).
-3. **Pinggy Tunnel Rotation**: When the tunnel provider is `pinggy`, the free tier rotates the URL roughly every 50–60 minutes; the watchdog renews it **proactively** (~every 50 min) and republishes the new signed URL to the `ntfy.sh` fallback topic. If your GET/POST suddenly stops connecting, run **Section 5**.
+3. **Pinggy Tunnel Rotation**: When the tunnel provider is `pinggy`, the free tier rotates the URL roughly every 50–60 minutes; the watchdog renews it **proactively** (~every 50 min) and republishes the new signed URL to the `ntfy.sh` fallback topic. If your GET/POST suddenly stops connecting, run **Section 5**. The `lhr` (localhost.run) provider has no fixed TTL — its URL changes only when the tunnel process restarts, and any new URL is republished to the fallback topic the same way.
 4. **HTTP Error Codes**:
    - `401 Unauthorized`: Token was rotated by the owner (`cloud-agent-bridge --ai-user rotate`). Ask the user for the updated token.
    - `403 Forbidden`: Owner locked AI access (`cloud-agent-bridge --ai-user lock`). Stop and ask the user.

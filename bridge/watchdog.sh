@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================
-# watchdog.sh — Supervises local Webhook Agent + Tunnel (Cloudflare or Pinggy HTTPS)
+# watchdog.sh — Supervises local Webhook Agent + Tunnel (Cloudflare / Pinggy HTTPS / localhost.run)
 # Part of the "cloud-agent-bridge" kit (see README.md)
 # =============================================================
 CAB_DIR="$HOME/.cloud-agent-bridge"
@@ -90,25 +90,39 @@ ensure_agent() {
     fi
 }
 
+ensure_ssh_key() {
+    local keyf="$CAB_DIR/tunnel_id_ed25519"
+    if [ ! -f "$keyf" ] && command -v ssh-keygen >/dev/null 2>&1; then
+        ssh-keygen -t ed25519 -N "" -f "$keyf" >/dev/null 2>&1 \
+            || ssh-keygen -t rsa -b 2048 -N "" -f "$keyf" >/dev/null 2>&1 || true
+        chmod 600 "$keyf" 2>/dev/null || true
+    fi
+    printf '%s' "$keyf"
+}
+
 tunnel_running() {
     local TUNNEL_PROVIDER="cf"
     [ -f "$STATE_ENV" ] && . "$STATE_ENV"
-    if [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ]; then
-        pgrep -f 'ssh -p 443.*free\.pinggy\.io' >/dev/null 2>&1
-    else
-        pgrep -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' >/dev/null 2>&1
-    fi
+    case "${TUNNEL_PROVIDER:-cf}" in
+        pinggy) pgrep -f 'ssh.*free\.pinggy\.io' >/dev/null 2>&1 ;;
+        lhr)    pgrep -f 'ssh.*localhost\.run' >/dev/null 2>&1 ;;
+        *)      pgrep -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' >/dev/null 2>&1 ;;
+    esac
 }
 
 start_tunnel() {
-    local cf urlf="$CAB_DIR/tunnel_new.log" url i TUNNEL_PROVIDER="cf" CF_TUNNEL_TOKEN="" CUSTOM_WEBHOOK_URL=""
+    local cf urlf="$CAB_DIR/tunnel_new.log" url i keyf key_opt=()
+    local TUNNEL_PROVIDER="cf" CF_TUNNEL_TOKEN="" CUSTOM_WEBHOOK_URL=""
     [ -f "$STATE_ENV" ] && . "$STATE_ENV"
     pkill -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' 2>/dev/null || true
-    pkill -f 'ssh -p 443.*free\.pinggy\.io' 2>/dev/null || true
+    pkill -f 'ssh.*(free\.pinggy\.io|localhost\.run)' 2>/dev/null || true
     rm -f "$urlf"
 
     if [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ]; then
-        setsid nohup ssh -p 443 \
+        keyf="$(ensure_ssh_key)"
+        [ -f "$keyf" ] && key_opt=(-i "$keyf")
+        # -T (no pseudo-terminal) makes Pinggy print plain-text URLs instead of ANSI TUI codes
+        setsid nohup ssh -T -p 443 "${key_opt[@]}" \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -o ServerAliveInterval=30 \
@@ -118,7 +132,29 @@ start_tunnel() {
         echo $! > "$CAB_DIR/tunnel.pid"
         for i in $(seq 1 25); do
             sleep 3
-            url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(pinggy\.link|pinggy-free\.link|a\.free\.pinggy\.link)' "$urlf" 2>/dev/null | head -1)"
+            url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(pinggy\.link|pinggy-free\.link)' "$urlf" 2>/dev/null | head -1)"
+            if [ -n "$url" ]; then
+                printf '%s' "$url"
+                return 0
+            fi
+        done
+        return 1
+    fi
+
+    if [ "${TUNNEL_PROVIDER:-cf}" = "lhr" ]; then
+        keyf="$(ensure_ssh_key)"
+        [ -f "$keyf" ] && key_opt=(-i "$keyf")
+        setsid nohup ssh -T "${key_opt[@]}" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=3 \
+            -o ExitOnForwardFailure=yes \
+            -R80:127.0.0.1:${AGENT_PORT} nokey@localhost.run > "$urlf" 2>&1 < /dev/null &
+        echo $! > "$CAB_DIR/tunnel.pid"
+        for i in $(seq 1 25); do
+            sleep 3
+            url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(lhr\.life|localhost\.run)' "$urlf" 2>/dev/null | grep -v 'admin\.localhost\.run' | head -1)"
             if [ -n "$url" ]; then
                 printf '%s' "$url"
                 return 0

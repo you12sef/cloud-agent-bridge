@@ -155,7 +155,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return self._send(200, {
                 "status": "ok",
                 "service": "cloud-agent-bridge",
-                "version": "2.1",
+                "version": "2.2",
                 "ai_user": ai_user or cur_user,
                 "sudo": st.get("AI_SUDO", "off"),
             })
@@ -359,7 +359,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return self._send(200, {
                 "status": "alive",
                 "service": "cloud-agent-bridge",
-                "version": "2.1",
+                "version": "2.2",
                 "modes": ["POST (JSON)", "GET (?token=...&p=<base64url_json>)", "GET (?token=...&cmd_b64=<base64url_cmd>)"]
             })
 

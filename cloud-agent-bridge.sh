@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # =====================================================================
 #  cloud-agent-bridge.sh — Universal Tunnel + HTTP GET/POST Agent
-#  Supports Cloudflare Quick Tunnels + Pinggy HTTPS (WAF-free for Gemini)
+#  Supports Cloudflare Quick Tunnels + Pinggy HTTPS + localhost.run HTTPS
 #  Supports BOTH HTTP POST (JSON) and HTTP GET (Base64URL Payload + Web UI)
 # ---------------------------------------------------------------------
 #  Usage:
 #    bash cloud-agent-bridge.sh --start                  install + start bridge
-#    bash cloud-agent-bridge.sh --start --provider pinggy  use Pinggy HTTPS (bypasses Cloudflare Bot Fight for Gemini)
+#    bash cloud-agent-bridge.sh --start --provider pinggy  use Pinggy HTTPS (WAF-free for Gemini)
+#    bash cloud-agent-bridge.sh --start --provider lhr     use localhost.run HTTPS (WAF-free for Gemini)
 #    bash cloud-agent-bridge.sh --stop                   full stop (watchdog + tunnel + agent)
 #    bash cloud-agent-bridge.sh --status                 show status + AI handoff snippet
 #    bash cloud-agent-bridge.sh --handoff                print ONLY the paste-ready AI snippet
 #    bash cloud-agent-bridge.sh --restart                restart services
 #    bash cloud-agent-bridge.sh --new-topic              rotate the fallback ntfy topic
-#    bash cloud-agent-bridge.sh --provider cf|pinggy     switch tunnel provider
+#    bash cloud-agent-bridge.sh --provider cf|pinggy|lhr switch tunnel provider
 #    bash cloud-agent-bridge.sh --tunnel-token T [URL]   configure a Named Cloudflare Tunnel token
 #    bash cloud-agent-bridge.sh --uninstall              stop + remove cron/PATH/state
 #    bash cloud-agent-bridge.sh --purge                  like --uninstall + delete project folder
@@ -25,7 +26,7 @@ set -u
 : "${HOME:?ERROR: HOME is not set}"
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 
-VERSION="2.1"
+VERSION="2.2"
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 WATCHDOG_TEMPLATE="$SCRIPT_DIR/bridge/watchdog.sh"
@@ -107,7 +108,7 @@ load_state() {
 
 # ---------- cloudflared auto-installer (no root needed) ------------------
 ensure_cloudflared() {
-    [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ] && return 0
+    [ "${TUNNEL_PROVIDER:-cf}" != "cf" ] && return 0
     if command -v cloudflared >/dev/null 2>&1; then
         CF_BIN="$(command -v cloudflared)"
         return 0
@@ -135,6 +136,20 @@ ensure_cloudflared() {
     chmod +x "$CF_BIN.tmp"
     mv "$CF_BIN.tmp" "$CF_BIN"
     log "cloudflared installed successfully"
+}
+
+# ---------- SSH key for passwordless tunnel providers --------------------
+ensure_tunnel_ssh_key() {
+    [ "${TUNNEL_PROVIDER:-cf}" = "cf" ] && return 0
+    mkdir -p "$CAB_DIR"
+    local keyf="$CAB_DIR/tunnel_id_ed25519"
+    if [ ! -f "$keyf" ]; then
+        if command -v ssh-keygen >/dev/null 2>&1; then
+            ssh-keygen -t ed25519 -N "" -f "$keyf" >/dev/null 2>&1 \
+                || ssh-keygen -t rsa -b 2048 -N "" -f "$keyf" >/dev/null 2>&1 || true
+            chmod 600 "$keyf" 2>/dev/null || true
+        fi
+    fi
 }
 
 # ---------- PATH integration ---------------------------------------------
@@ -199,8 +214,8 @@ stop_services() {
     if pkill -f 'cloudflared tunnel.*(127\.0\.0\.1|--token)' 2>/dev/null; then
         log "cloudflared tunnel: stopped"
     fi
-    if pkill -f 'ssh -p 443.*free\.pinggy\.io' 2>/dev/null; then
-        log "pinggy HTTPS tunnel: stopped"
+    if pkill -f 'ssh.*(free\.pinggy\.io|localhost\.run)' 2>/dev/null; then
+        log "SSH HTTPS tunnel: stopped"
     fi
     if pkill -f 'python3.*cloud-agent-bridge/agent\.py' 2>/dev/null; then
         log "webhook agent: stopped"
@@ -238,7 +253,7 @@ grab_url() {
     local f url=""
     for f in "$CAB_DIR/current.json" "$CAB_DIR/tunnel_new.log"; do
         [ -f "$f" ] || continue
-        url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(trycloudflare\.com|pinggy\.link|pinggy-free\.link|a\.free\.pinggy\.link)' "$f" 2>/dev/null | head -1)"
+        url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.(trycloudflare\.com|pinggy\.link|pinggy-free\.link|lhr\.life|localhost\.run)' "$f" 2>/dev/null | grep -v 'admin\.localhost\.run' | head -1)"
         [ -n "$url" ] && { printf '%s' "$url"; return 0; }
     done
     return 1
@@ -246,7 +261,7 @@ grab_url() {
 
 wait_url() {
     local i url=""
-    for i in $(seq 1 "${1:-24}"); do
+    for i in $(seq 1 "${1:-28}"); do
         sleep 3
         url="$(grab_url)" && break
     done
@@ -464,6 +479,7 @@ cmd_start() {
     [ -n "${NAME:-}" ] || NAME="$(hostname)"
 
     ensure_cloudflared
+    ensure_tunnel_ssh_key
     ai_auto_setup
     render_files
     path_install
@@ -482,12 +498,13 @@ cmd_start() {
         return 0
     fi
 
-    log "waiting for HTTPS Tunnel URL (provider: $TUNNEL_PROVIDER, up to 70s)..."
+    log "waiting for HTTPS Tunnel URL (provider: $TUNNEL_PROVIDER, up to 80s)..."
     local url
-    if url="$(wait_url 24)"; then
+    if url="$(wait_url 28)"; then
         print_handoff_snippet
     else
         warn "tunnel URL not ready yet — check in a moment with: cloud-agent-bridge --status"
+        warn "or inspect tunnel log: cat $CAB_DIR/tunnel_new.log"
     fi
 }
 
@@ -507,6 +524,7 @@ cmd_status() {
     url="$(grab_url)" || url="(waiting for tunnel...)"
     crontab -l 2>/dev/null | grep -q 'cloud-agent-bridge/watchdog.sh' && cron_s="enabled (@reboot + */5)"
     [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ] && mode_s="Pinggy HTTPS Tunnel (WAF-free for Gemini GET/Browse)"
+    [ "${TUNNEL_PROVIDER:-cf}" = "lhr" ] && mode_s="localhost.run HTTPS Tunnel (WAF-free for Gemini GET/Browse)"
     [ -n "${CF_TUNNEL_TOKEN:-}" ] && mode_s="Cloudflare Named Tunnel (persistent domain)"
 
     echo "=========================================================="
@@ -573,9 +591,10 @@ cmd_provider() {
     load_state
     local p="${1:-}"
     case "$p" in
-        cf|cloudflare) TUNNEL_PROVIDER="cf" ;;
-        pinggy)        TUNNEL_PROVIDER="pinggy" ;;
-        *) die "usage: cloud-agent-bridge --provider cf|pinggy" ;;
+        cf|cloudflare)        TUNNEL_PROVIDER="cf" ;;
+        pinggy)               TUNNEL_PROVIDER="pinggy" ;;
+        lhr|localhost.run)    TUNNEL_PROVIDER="lhr" ;;
+        *) die "usage: cloud-agent-bridge --provider cf|pinggy|lhr" ;;
     esac
     save_state
     alog "provider=$TUNNEL_PROVIDER"
@@ -625,12 +644,13 @@ cloud-agent-bridge — Universal HTTPS Tunnel + GET/POST Webhook Agent
 
 Usage:
   bash cloud-agent-bridge.sh --start                      install & start tunnel + webhook agent
-  bash cloud-agent-bridge.sh --start --provider pinggy    start with Pinggy HTTPS (bypasses Cloudflare WAF for Gemini)
+  bash cloud-agent-bridge.sh --start --provider pinggy    start with Pinggy HTTPS (WAF-free for Gemini)
+  bash cloud-agent-bridge.sh --start --provider lhr       start with localhost.run HTTPS (WAF-free for Gemini)
   bash cloud-agent-bridge.sh --stop                       stop all bridge processes
   bash cloud-agent-bridge.sh --status                     show full status + handoff block
   bash cloud-agent-bridge.sh --handoff                    print ONLY the AI handoff snippet
   bash cloud-agent-bridge.sh --restart                    restart tunnel & agent
-  bash cloud-agent-bridge.sh --provider cf|pinggy         switch between Cloudflare and Pinggy HTTPS
+  bash cloud-agent-bridge.sh --provider cf|pinggy|lhr     switch between Cloudflare, Pinggy, and localhost.run
   bash cloud-agent-bridge.sh --new-topic                  rotate fallback ntfy topic
   bash cloud-agent-bridge.sh --tunnel-token <TOK> [URL]   use a permanent Named Cloudflare Tunnel
   bash cloud-agent-bridge.sh --uninstall                  remove cron, PATH, and ~/.cloud-agent-bridge
