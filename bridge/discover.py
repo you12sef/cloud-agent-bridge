@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-discover.py — AI Client & Fallback Discovery Tool for cloud-agent-bridge v2.0
+discover.py — AI Client & Fallback Discovery Tool for cloud-agent-bridge
 Zero external dependencies (uses Python standard library only).
 
 Features:
@@ -55,7 +55,7 @@ def call_webhook(webhook_url, token, payload, timeout=90):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="cloud-agent-bridge v2.0 client & discovery tool")
+    ap = argparse.ArgumentParser(description="cloud-agent-bridge client & discovery tool")
     ap.add_argument("--url", help="Webhook URL (https://*.trycloudflare.com)")
     ap.add_argument("--topic", help="Fallback ntfy.sh topic (if --url is omitted or unreachable)")
     ap.add_argument("--token", required=True, help="40-char API Bearer token")
