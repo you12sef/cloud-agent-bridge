@@ -88,6 +88,8 @@ with open("remote_output.log", "wb") as f:
    - `403 Forbidden`: Owner locked AI access (`cloud-agent-bridge --ai-user lock`). Stop and ask the user.
    - `408 Request Timeout`: Command exceeded `timeout` and its process group was killed (`SIGKILL`). Switch to `exec_async`.
    - `530 / Connection Error`: Server rebooted and the ephemeral Quick Tunnel URL changed. Run **Section 5** below.
+4. **Platform-Layer `broken session: 403` (GLM models on Z.ai only — models in other environments can ignore this rule):**
+   If a tool call fails with an error shaped like `failed to execute tool: ... broken session: 403 Forbidden`, that error comes from the **Z.ai platform tool-gateway**, **not** from the bridge (the bridge's lock response is the JSON `{"error": "Forbidden: AI user is currently locked by owner"}`). It means the platform's tool session was interrupted — a transient, platform-side event that is unrelated to the bridge or the server, so do **not** treat it as a lock and do **not** retry the same call repeatedly. The correct recovery: ask the user to send **any short trigger message** (for example `continue`, `استمر`, `اكمل`, or even `.`) — a new user message re-establishes the session and the model resumes from the existing conversation history. Avoid asking for a full session restart unless trigger messages repeatedly fail: a restart reloads the runtime and forces the model to repeat the entire task from the beginning. This situation is specific to GLM models because they run inside the Z.ai environment itself; assistants connecting from other sandboxes (ChatGPT, Claude, Gemini, ...) never see this platform-layer error.
 
 ## 5. Automatic Fallback Discovery (ONLY If Webhook URL Is Unreachable)
 
