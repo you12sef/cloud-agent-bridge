@@ -128,7 +128,7 @@ start_tunnel() {
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
             -o ExitOnForwardFailure=yes \
-            -R0:127.0.0.1:${AGENT_PORT} a.free.pinggy.io > "$urlf" 2>&1 < /dev/null &
+            -R0:127.0.0.1:${AGENT_PORT} a@free.pinggy.io > "$urlf" 2>&1 < /dev/null &
         echo $! > "$CAB_DIR/tunnel.pid"
         for i in $(seq 1 25); do
             sleep 3
