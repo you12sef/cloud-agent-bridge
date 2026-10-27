@@ -1,4 +1,4 @@
-# AI HANDOFF — Cloud-Agent-Bridge (v2.0)
+# AI HANDOFF — Cloud-Agent-Bridge
 
 > **SYSTEM DIRECTIVE FOR THE AI MODEL:**
 > You have direct operational access to a remote Linux server via an **HTTPS Webhook** behind a Cloudflare Tunnel.
@@ -49,7 +49,7 @@ def bridge(payload, timeout=90):
         headers={
             "Authorization": f"Bearer {TOKEN}",
             "Content-Type": "application/json",
-            "User-Agent": "cloud-agent-bridge/2.0"
+            "User-Agent": "cloud-agent-bridge"
         },
         method="POST"
     )
@@ -101,7 +101,7 @@ TOKEN = "<API_TOKEN>"
 
 req = urllib.request.Request(
     f"https://ntfy.sh/{TOPIC}/json?poll=1&since=all",
-    headers={"User-Agent": "cloud-agent-bridge/2.0"}
+    headers={"User-Agent": "cloud-agent-bridge"}
 )
 with urllib.request.urlopen(req, timeout=25) as r:
     best_url, best_ts = "", 0

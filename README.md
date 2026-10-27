@@ -1,20 +1,20 @@
-# Cloud-Agent-Bridge (v2.0)
+# Cloud-Agent-Bridge
 
-**Persistent, zero-dependency HTTPS Webhook bridge that gives AI agents secure operational access to any Linux server behind NAT — no SSH keys, no `paramiko`, and no 60-minute tunnel drops.**
+**Persistent, zero-dependency HTTPS Webhook bridge that gives AI agents secure operational access to any Linux server behind NAT — no SSH keys, no `paramiko`, and no dropped sessions.**
 
 `cloud-agent-bridge` connects sandboxed AI assistants (ChatGPT, Claude, Gemini, local LLM agents) to your home server or private VPS over standard HTTPS POST requests. It pairs a localhost-only Python micro-agent with a **Cloudflare Tunnel (`cloudflared`)**, enforces OS-level user isolation (`ai-*`), and provides an **HMAC-SHA256 signed `ntfy.sh` fallback** for automatic URL recovery after server reboots.
 
-## Why v2.0? (Architecture Upgrade)
+## Key Features
 
-| Feature | Legacy v1 (Pinggy + SSH) | Cloud-Agent-Bridge v2.0 (Cloudflare + Webhook) |
-| :--- | :--- | :--- |
-| **Transport Protocol** | Raw TCP SSH tunnel via Pinggy Free | **HTTPS Webhook via Cloudflare Tunnel (`cloudflared`)** |
-| **Session Stability** | Hard-killed every 50–60 minutes | **Continuous connection** (no hourly drops) |
-| **AI Sandbox Setup** | Required `pip install paramiko` & SSH handshake | **Zero dependencies** (`curl` or Python `urllib` out of the box) |
-| **Authentication** | Plaintext SSH password + `AutoAddPolicy()` (MITM risk) | **256-bit Bearer Token** (`hmac.compare_digest` timing-safe) |
-| **Long-Running Tasks** | Dropped on tunnel renewal | **Built-in Async Jobs API** (`exec_async` & `job_status`) |
-| **Reboot Discovery** | Unsigned public `ntfy.sh` messages (spoofing risk) | **HMAC-SHA256 signed `RENEW` records** verified with Bearer Token |
-| **Instant Revocation** | Required `usermod` + `sshd` reload | **Zero-latency state reload** (`--ai-user lock` / `rotate`) |
+| Feature | What It Gives You |
+| :--- | :--- |
+| **Transport Protocol** | **HTTPS Webhook via Cloudflare Tunnel (`cloudflared`)** — reaches servers behind NAT and firewalls with zero port forwarding |
+| **Session Stability** | **Continuous connection** — no hourly drops, no mid-task tunnel renewals |
+| **AI Sandbox Setup** | **Zero dependencies** (`curl` or Python `urllib` out of the box) |
+| **Authentication** | **256-bit Bearer Token** (`hmac.compare_digest` timing-safe) |
+| **Long-Running Tasks** | **Built-in Async Jobs API** (`exec_async` & `job_status`) |
+| **Reboot Discovery** | **HMAC-SHA256 signed `RENEW` records** verified with the Bearer Token |
+| **Instant Revocation** | **Zero-latency state reload** (`--ai-user lock` / `rotate`) |
 
 ## How It Works
 
@@ -55,7 +55,7 @@ What `--start` does automatically:
 Run `cloud-agent-bridge --handoff` (or copy the bottom block from `--start` / `--status`) and paste it into your AI chat alongside `AI-HANDOFF.md`:
 
 ```text
-=== CLOUD-AGENT-BRIDGE AI HANDOFF (v2.0) ===
+=== CLOUD-AGENT-BRIDGE AI HANDOFF ===
 server name : ubuntu-prod
 webhook url : https://random-words-here.trycloudflare.com
 api token   : 8f9a2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a
