@@ -100,6 +100,17 @@ ensure_ssh_key() {
     printf '%s' "$keyf"
 }
 
+lhr_healthy() { # POST /ping through the public URL; HTTP 200 = forwarding alive
+    local code AI_PASS=""
+    [ -n "$CUR_URL" ] || return 1
+    [ -f "$AI_STATE_FILE" ] && . "$AI_STATE_FILE"
+    [ -n "${AI_PASS:-}" ] || return 0
+    code="$(curl -s -m 8 -o /dev/null -w '%{http_code}' -X POST \
+        -H "Authorization: Bearer ${AI_PASS}" -H 'Content-Type: application/json' \
+        -d '{"action":"ping"}' "$CUR_URL" 2>/dev/null)"
+    [ "$code" = "200" ]
+}
+
 tunnel_running() {
     local TUNNEL_PROVIDER="cf"
     [ -f "$STATE_ENV" ] && . "$STATE_ENV"
@@ -203,12 +214,19 @@ while true; do
     TUNNEL_PROVIDER="cf"
     [ -f "$STATE_ENV" ] && . "$STATE_ENV"
 
-    # Renew if tunnel died OR if using pinggy free tier and approaching 50m (3000s)
+    # Renew if tunnel died OR if an SSH free tier is nearing its drop window
+    # (pinggy ~50-60m, localhost.run ~30m observed) or failing its health probe
     NEED_START=0
     if ! tunnel_running || [ -z "$CUR_URL" ]; then
         NEED_START=1
     elif [ "${TUNNEL_PROVIDER:-cf}" = "pinggy" ] && [ "$AGE" -ge 3000 ]; then
         log "pinggy 50-min proactive renewal triggered"
+        NEED_START=1
+    elif [ "${TUNNEL_PROVIDER:-cf}" = "lhr" ] && [ "$AGE" -ge 1500 ]; then
+        log "lhr 25-min proactive renewal triggered"
+        NEED_START=1
+    elif [ "${TUNNEL_PROVIDER:-cf}" = "lhr" ] && [ $((HOUSE % 6)) -eq 0 ] && ! lhr_healthy; then
+        log "lhr health probe failed - restarting tunnel"
         NEED_START=1
     fi
 

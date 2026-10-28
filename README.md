@@ -48,7 +48,7 @@ bash cloud-agent-bridge.sh --start
 # Option B: For Gemini Chat (Pinggy HTTPS — has NO Cloudflare WAF/Bot-Fight blocking Google's crawler)
 bash cloud-agent-bridge.sh --start --provider pinggy
 
-# Option C: For Gemini Chat without Pinggy (localhost.run HTTPS — instant SSH tunnel, WAF-free, nothing to install)
+# Option C: For Gemini Chat without Pinggy (localhost.run HTTPS — instant SSH tunnel, WAF-free, nothing to install; free tier rotates URLs ~every 25-30 min, new URLs announced via the ntfy fallback topic)
 bash cloud-agent-bridge.sh --start --provider lhr
 ```
 
